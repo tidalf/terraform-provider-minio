@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/minio/minio-go/v7"
 	"log"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/minio/minio-go/v7"
 
 	"github.com/hashicorp/terraform-plugin-sdk/helper/resource"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
@@ -58,6 +60,26 @@ func resourceMinioBucket() *schema.Resource {
 			"bucket_domain_name": {
 				Type:     schema.TypeString,
 				Computed: true,
+			},
+			"versioning": {
+				Type:     schema.TypeList,
+				Optional: true,
+				Computed: true,
+				MaxItems: 1,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"enabled": {
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  false,
+						},
+						"mfa_delete": {
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  false,
+						},
+					},
+				},
 			},
 		},
 	}
@@ -140,6 +162,32 @@ func minioReadBucket(d *schema.ResourceData, meta interface{}) error {
 
 	_ = d.Set("bucket_domain_name", string(bucketDomainName(d.Id(), bucketURL)))
 
+	// Read the versioning configuration
+
+	vcl := make([]map[string]interface{}, 0, 1)
+	if bucketVersion, err := bucketConfig.MinioClient.GetBucketVersioning(context.Background(), bucketConfig.MinioBucket); err == nil {
+		vc := make(map[string]interface{})
+
+		if bucketVersion.Status != "" && bucketVersion.Status == s3.BucketVersioningStatusEnabled {
+			vc["enabled"] = true
+		} else {
+			vc["enabled"] = false
+		}
+
+		if bucketVersion.MFADelete != "" && bucketVersion.Status == s3.MFADeleteEnabled {
+			vc["mfa_delete"] = true
+		} else {
+			vc["mfa_delete"] = false
+		}
+
+		vcl = append(vcl, vc)
+
+	}
+
+	if err := d.Set("versioning", vcl); err != nil {
+		return fmt.Errorf("error setting versioning: %s", err)
+	}
+
 	return nil
 }
 
@@ -157,6 +205,12 @@ func minioUpdateBucket(d *schema.ResourceData, meta interface{}) error {
 
 		log.Printf("[DEBUG] Bucket [%s] updated!", bucketConfig.MinioBucket)
 
+	}
+
+	if d.HasChange("versioning") {
+		if err := resourceMinioS3BucketVersioningUpdate(d, meta); err != nil {
+			return err
+		}
 	}
 	return minioReadBucket(d, meta)
 
@@ -244,7 +298,7 @@ func aclBucket(bucketConfig *S3MinioBucket) error {
 }
 
 func findValuePolicies(bucketConfig *S3MinioBucket) bool {
-	policies, _ := bucketConfig.MinioAdmin.ListCannedPolicies(context.Background())
+	policies, _ := bucketConfig.MinioAdmin.ListCannedPolicies()
 	for key := range policies {
 		value := string(key)
 		if value == bucketConfig.MinioACL {
@@ -285,6 +339,33 @@ func validateS3BucketName(value string) error {
 	}
 	if strings.Contains(value, `..`) {
 		return fmt.Errorf("%q can be only one period between labels", value)
+	}
+
+	return nil
+}
+
+func resourceMinioS3BucketVersioningUpdate(d *schema.ResourceData, meta interface{}) error {
+	var err error
+
+	bucketConfig := BucketConfig(d, meta)
+	bucketVersion := bucketConfig.MinioVersioning
+
+	if len(bucketVersion) > 0 {
+		//version := bucketVersion[0].(map[string]interface{})
+
+		if bucketVersion["enabled"].(bool) {
+			err = bucketConfig.MinioClient.EnableVersioning(context.Background(), bucketConfig.MinioBucket)
+
+		} else {
+			err = bucketConfig.MinioClient.SuspendVersioning(context.Background(), bucketConfig.MinioBucket)
+		}
+	} else {
+		err = bucketConfig.MinioClient.SuspendVersioning(context.Background(), bucketConfig.MinioBucket)
+	}
+
+	if err != nil {
+		log.Printf("%s", NewResourceError("Error putting S3 versioning (%s): %s", bucketConfig.MinioBucket, err))
+		return NewResourceError("[VERSIONING] Error putting S3 versioning(%s): %s", bucketConfig.MinioBucket, err)
 	}
 
 	return nil
