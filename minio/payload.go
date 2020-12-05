@@ -34,6 +34,7 @@ type S3MinioBucket struct {
 	MinioACL          string
 	MinioAccess       string
 	MinioForceDestroy bool
+	MinioVersioning   map[string]interface{}
 }
 
 //S3MinioIAMUserConfig defines IAM config

@@ -17,6 +17,7 @@ func BucketConfig(d *schema.ResourceData, meta interface{}) *S3MinioBucket {
 		MinioBucketPrefix: d.Get("bucket_prefix").(string),
 		MinioACL:          d.Get("acl").(string),
 		MinioForceDestroy: d.Get("force_destroy").(bool),
+		MinioVersioning:   d.Get("versioning").(map[string]interface{}),
 	}
 }
 
